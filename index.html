@@ -43,6 +43,14 @@
     button.secondary { background: #475569; }
     button.success { background: #059669; }
     button.danger { background: #dc2626; width: auto; padding: 6px 10px; font-size: 0.85rem; }
+    #cameraPreview {
+      width: 100%;
+      max-height: 280px;
+      background: #0f172a;
+      border-radius: 10px;
+      margin-top: 8px;
+      object-fit: cover;
+    }
     .status {
       font-size: 0.92rem;
       margin-top: 10px;
@@ -99,15 +107,22 @@
     </div>
 
     <div class="row">
+      <button type="button" id="startCamBtn" onclick="onStartCameraClick()">הפעל מצלמה חיה</button>
+      <button type="button" id="stopCamBtn" class="secondary" onclick="onStopCameraClick()">עצור מצלמה</button>
+    </div>
+
+    <video id="cameraPreview" class="hidden" playsinline muted autoplay></video>
+
+    <div class="row" style="margin-top: 10px;">
       <div>
-        <label for="photoBarcodeInput">צלם או בחר תמונת ברקוד</label>
+        <label for="photoBarcodeInput">או צלם / בחר תמונת ברקוד</label>
         <input type="file" id="photoBarcodeInput" accept="image/*" capture="environment" onchange="onPhotoSelected(this)" />
       </div>
     </div>
 
     <div class="row" style="margin-top: 10px;">
       <div>
-        <label for="manualBarcode">הזן ברקוד ידנית</label>
+        <label for="manualBarcode">או הזן ברקוד ידנית</label>
         <input type="text" id="manualBarcode" placeholder="למשל: 3017620422003" inputmode="numeric" />
       </div>
       <div style="align-self: end;">
@@ -155,6 +170,11 @@
     var state = loadMeals();
     var customCatalog = loadCatalog();
     var pendingBarcode = "";
+    var activeStream = null;
+    var scanTimer = null;
+    var liveReader = null;
+    var lastCode = "";
+    var lastCodeTime = 0;
 
     function setStatus(msg, isError) {
       var el = document.getElementById("statusMsg");
@@ -176,269 +196,3 @@
         return { breakfast: [], lunch: [], dinner: [], snacks: [] };
       }
     }
-
-    function saveMeals() {
-      try {
-        localStorage.setItem(STORAGE_KEY_MEALS, JSON.stringify(state));
-      } catch (e) {}
-      renderMeals();
-    }
-
-    function loadCatalog() {
-      try {
-        return JSON.parse(localStorage.getItem(STORAGE_KEY_CATALOG)) || {};
-      } catch (e) {
-        return {};
-      }
-    }
-
-    function saveCatalog() {
-      try {
-        localStorage.setItem(STORAGE_KEY_CATALOG, JSON.stringify(customCatalog));
-      } catch (e) {}
-    }
-
-    function addProductToCurrentMeal(product) {
-      var meal = document.getElementById("mealSelect").value;
-      var grams = Math.max(1, Number(document.getElementById("gramsInput").value) || 100);
-      var calories = Math.round((product.kcalPer100g * grams) / 100);
-
-      state[meal].push({
-        id: Date.now() + "_" + Math.random().toString(36).slice(2, 6),
-        barcode: product.barcode,
-        name: product.name,
-        grams: grams,
-        calories: calories
-      });
-
-      saveMeals();
-      document.getElementById("manualProductBox").classList.add("hidden");
-      setStatus("נוסף ל" + MEAL_LABELS[meal] + ": " + product.name + " (" + grams + "g = " + calories + ' קק"ל)');
-    }
-
-    function openManualFallback(code, message) {
-      pendingBarcode = code || "";
-      document.getElementById("customName").value = "";
-      document.getElementById("customKcal100").value = "";
-      document.getElementById("manualProductBox").classList.remove("hidden");
-      setStatus(message, true);
-    }
-
-    function handleBarcode(code) {
-      var clean = String(code || "").trim();
-      if (!clean) {
-        setStatus("נא להזין מספר ברקוד", true);
-        return;
-      }
-
-      if (customCatalog[clean]) {
-        addProductToCurrentMeal(customCatalog[clean]);
-        return;
-      }
-
-      setStatus("מחפש ברקוד " + clean + "...");
-      fetch("https://world.openfoodfacts.org/api/v2/product/" + encodeURIComponent(clean) + ".json")
-        .then(function (res) {
-          if (!res.ok) throw new Error("HTTP " + res.status);
-          return res.json();
-        })
-        .then(function (data) {
-          if (data && data.status === 1 && data.product) {
-            var p = data.product;
-            var kcal100 = p.nutriments && (p.nutriments["energy-kcal_100g"] || p.nutriments["energy-kcal"]);
-            if (kcal100 !== undefined && kcal100 !== null && !isNaN(Number(kcal100))) {
-              addProductToCurrentMeal({
-                barcode: clean,
-                name: p.product_name_he || p.product_name || ("מוצר " + clean),
-                kcalPer100g: Number(kcal100)
-              });
-              return;
-            }
-          }
-          openManualFallback(
-            clean,
-            "ברקוד " + clean + " לא נמצא במאגר. מלא שם וקלוריות ל-100 גרם לשמירה במכשיר."
-          );
-        })
-        .catch(function () {
-          openManualFallback(
-            clean,
-            "שגיאה בחיפוש ברקוד " + clean + ". אפשר להזין ולשמור את המוצר ידנית."
-          );
-        });
-    }
-
-    function decodeWithZxing(file) {
-      return new Promise(function (resolve, reject) {
-        if (!window.ZXing || typeof window.ZXing.BrowserMultiFormatReader !== "function") {
-          reject(new Error("ZXing not loaded"));
-          return;
-        }
-        var reader = new window.ZXing.BrowserMultiFormatReader();
-        var url = URL.createObjectURL(file);
-        reader.decodeFromImageUrl(url)
-          .then(function (result) {
-            URL.revokeObjectURL(url);
-            resolve(result && result.getText ? result.getText() : null);
-          })
-          .catch(function (err) {
-            URL.revokeObjectURL(url);
-            reject(err);
-          });
-      });
-    }
-
-    function decodeWithBarcodeDetector(file) {
-      if (typeof window.BarcodeDetector !== "function" || typeof createImageBitmap !== "function") {
-        return Promise.resolve(null);
-      }
-      var detector = new window.BarcodeDetector({
-        formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39"]
-      });
-      return createImageBitmap(file)
-        .then(function (bitmap) { return detector.detect(bitmap); })
-        .then(function (barcodes) {
-          if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
-            return barcodes[0].rawValue;
-          }
-          return null;
-        })
-        .catch(function () { return null; });
-    }
-
-    function onPhotoSelected(inputEl) {
-      var file = inputEl.files && inputEl.files[0];
-      if (!file) return;
-      setStatus("מפענח ברקוד מתוך התמונה...");
-
-      decodeWithZxing(file)
-        .catch(function () { return decodeWithBarcodeDetector(file); })
-        .then(function (code) {
-          if (code) {
-            document.getElementById("manualBarcode").value = code;
-            handleBarcode(code);
-          } else {
-            openManualFallback(
-              "",
-              "התמונה צולמה, אך לא זוהה בה ברקוד (או שהדפדפן חסם סריקה/לא תומך). בדוק הרשאות מצלמה/דפדפן, נסה לצלם מקרוב, או הקלד ברקוד/מוצר ידנית."
-            );
-          }
-        })
-        .catch(function () {
-          openManualFallback(
-            "",
-            "פענוח התמונה נכשל. בדוק הרשאות בדפדפן או הקלד ברקוד/מוצר ידנית."
-          );
-        })
-        .finally(function () {
-          inputEl.value = "";
-        });
-    }
-
-    function onLookupClick() {
-      var code = document.getElementById("manualBarcode").value;
-      handleBarcode(code);
-    }
-
-    function onSaveCustomClick() {
-      var name = document.getElementById("customName").value.trim();
-      var kcal100 = Number(document.getElementById("customKcal100").value);
-      if (!name || isNaN(kcal100)) {
-        setStatus("נא למלא שם מוצר וקלוריות ל-100 גרם", true);
-        return;
-      }
-      var product = {
-        barcode: pendingBarcode || ("custom_" + Date.now()),
-        name: name,
-        kcalPer100g: kcal100
-      };
-      customCatalog[product.barcode] = product;
-      saveCatalog();
-      addProductToCurrentMeal(product);
-    }
-
-    function onClearDayClick() {
-      state = { breakfast: [], lunch: [], dinner: [], snacks: [] };
-      saveMeals();
-      setStatus("ארוחות היום נוקו");
-    }
-
-    function removeItem(meal, itemId) {
-      state[meal] = state[meal].filter(function (item) { return item.id !== itemId; });
-      saveMeals();
-    }
-
-    function moveItem(fromMeal, itemId, toMeal) {
-      if (fromMeal === toMeal) return;
-      var idx = state[fromMeal].findIndex(function (i) { return i.id === itemId; });
-      if (idx === -1) return;
-      var moved = state[fromMeal].splice(idx, 1)[0];
-      state[toMeal].push(moved);
-      saveMeals();
-    }
-
-    function renderMeals() {
-      var container = document.getElementById("mealsContainer");
-      container.innerHTML = "";
-      var grandTotal = 0;
-
-      Object.keys(MEAL_LABELS).forEach(function (mealKey) {
-        var label = MEAL_LABELS[mealKey];
-        var items = state[mealKey] || [];
-        var mealTotal = items.reduce(function (sum, item) { return sum + item.calories; }, 0);
-        grandTotal += mealTotal;
-
-        var sec = document.createElement("div");
-        sec.className = "meal-section";
-        sec.innerHTML = '<div class="meal-header"><span>' + label + '</span><span>' + mealTotal + ' קק"ל</span></div>';
-
-        if (items.length === 0) {
-          sec.innerHTML += '<div style="color:#94a3b8;font-size:0.85rem;">אין פריטים בארוחה</div>';
-        } else {
-          items.forEach(function (item) {
-            var row = document.createElement("div");
-            row.className = "item-row";
-
-            var selectMeal = document.createElement("select");
-            selectMeal.style.width = "auto";
-            selectMeal.style.padding = "4px 6px";
-            selectMeal.style.fontSize = "0.8rem";
-
-            Object.keys(MEAL_LABELS).forEach(function (mKey) {
-              var opt = document.createElement("option");
-              opt.value = mKey;
-              opt.textContent = MEAL_LABELS[mKey];
-              if (mKey === mealKey) opt.selected = true;
-              selectMeal.appendChild(opt);
-            });
-            selectMeal.onchange = function (e) {
-              moveItem(mealKey, item.id, e.target.value);
-            };
-
-            var delBtn = document.createElement("button");
-            delBtn.className = "danger";
-            delBtn.textContent = "✕";
-            delBtn.onclick = function () {
-              removeItem(mealKey, item.id);
-            };
-
-            var info = document.createElement("span");
-            info.textContent = item.name + " (" + item.grams + "g) — " + item.calories + ' קק"ל';
-
-            row.appendChild(info);
-            row.appendChild(selectMeal);
-            row.appendChild(delBtn);
-            sec.appendChild(row);
-          });
-        }
-        container.appendChild(sec);
-      });
-
-      document.getElementById("grandTotalBox").textContent = 'סה"כ קלוריות היום: ' + grandTotal + ' קק"ל';
-    }
-
-    renderMeals();
-    setStatus("המערכת מוכנה — צלם תמונה או הזן ברקוד");
-  </script>
-</body>
-</html>
