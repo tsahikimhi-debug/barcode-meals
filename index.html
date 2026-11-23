@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>סורק ברקוד ומסדר קלוריות</title>
-  <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+  <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
   <style>
     * { box-sizing: border-box; font-family: Arial, sans-serif; }
     body {
@@ -43,7 +43,6 @@
     button.secondary { background: #475569; }
     button.success { background: #059669; }
     button.danger { background: #dc2626; width: auto; padding: 6px 10px; font-size: 0.85rem; }
-    #temp-reader { display: none; }
     .status {
       font-size: 0.92rem;
       margin-top: 10px;
@@ -105,8 +104,6 @@
         <input type="file" id="photoBarcodeInput" accept="image/*" capture="environment" onchange="onPhotoSelected(this)" />
       </div>
     </div>
-
-    <div id="temp-reader"></div>
 
     <div class="row" style="margin-top: 10px;">
       <div>
@@ -239,7 +236,7 @@
         return;
       }
 
-      setStatus("מחפש ברקוד " + clean + " במאגר Open Food Facts ובמאגר האישי...");
+      setStatus("מחפש ברקוד " + clean + "...");
       fetch("https://world.openfoodfacts.org/api/v2/product/" + encodeURIComponent(clean) + ".json")
         .then(function (res) {
           if (!res.ok) throw new Error("HTTP " + res.status);
@@ -260,31 +257,32 @@
           }
           openManualFallback(
             clean,
-            "ברקוד " + clean + " לא קיים במאגר Open Food Facts (נפוץ במוצרים מקומיים/חדשים). מלא שם וקלוריות ל-100 גרם לשמירה במכשיר."
+            "ברקוד " + clean + " לא נמצא במאגר. מלא שם וקלוריות ל-100 גרם לשמירה במכשיר."
           );
         })
         .catch(function () {
           openManualFallback(
             clean,
-            "לא הצלחתי לשלוף את ברקוד " + clean + " מהמאגר החיצוני. אפשר להזין ולשמור את המוצר ידנית."
+            "שגיאה בחיפוש ברקוד " + clean + ". אפשר להזין ולשמור את המוצר ידנית."
           );
         });
     }
 
-    function decodeWithHtml5Qrcode(file) {
+    function decodeWithZxing(file) {
       return new Promise(function (resolve, reject) {
-        if (typeof Html5Qrcode === "undefined") {
-          reject(new Error("Html5Qrcode not loaded"));
+        if (!window.ZXing || typeof window.ZXing.BrowserMultiFormatReader !== "function") {
+          reject(new Error("ZXing not loaded"));
           return;
         }
-        var scanner = new Html5Qrcode("temp-reader");
-        scanner.scanFile(file, true)
-          .then(function (decodedText) {
-            try { scanner.clear(); } catch (e) {}
-            resolve(decodedText);
+        var reader = new window.ZXing.BrowserMultiFormatReader();
+        var url = URL.createObjectURL(file);
+        reader.decodeFromImageUrl(url)
+          .then(function (result) {
+            URL.revokeObjectURL(url);
+            resolve(result && result.getText ? result.getText() : null);
           })
           .catch(function (err) {
-            try { scanner.clear(); } catch (e) {}
+            URL.revokeObjectURL(url);
             reject(err);
           });
       });
@@ -313,7 +311,7 @@
       if (!file) return;
       setStatus("מפענח ברקוד מתוך התמונה...");
 
-      decodeWithHtml5Qrcode(file)
+      decodeWithZxing(file)
         .catch(function () { return decodeWithBarcodeDetector(file); })
         .then(function (code) {
           if (code) {
@@ -322,14 +320,14 @@
           } else {
             openManualFallback(
               "",
-              "לא הצלחתי לזהות ברקוד בתמונה. נסה לצלם מקרוב בתאורה טובה, או הקלד ברקוד / מלא פרטי מוצר ידנית."
+              "התמונה צולמה, אך לא זוהה בה ברקוד (או שהדפדפן חסם סריקה/לא תומך). בדוק הרשאות מצלמה/דפדפן, נסה לצלם מקרוב, או הקלד ברקוד/מוצר ידנית."
             );
           }
         })
         .catch(function () {
           openManualFallback(
             "",
-            "פענוח התמונה נכשל. אפשר להקליד ברקוד למעלה או למלא פרטי מוצר למטה."
+            "פענוח התמונה נכשל. בדוק הרשאות בדפדפן או הקלד ברקוד/מוצר ידנית."
           );
         })
         .finally(function () {
