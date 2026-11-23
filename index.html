@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>סורק ברקוד ומסדר קלוריות</title>
+  <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
   <style>
     * { box-sizing: border-box; font-family: Arial, sans-serif; }
     body {
@@ -42,6 +43,7 @@
     button.secondary { background: #475569; }
     button.success { background: #059669; }
     button.danger { background: #dc2626; width: auto; padding: 6px 10px; font-size: 0.85rem; }
+    #temp-reader { display: none; }
     .status {
       font-size: 0.92rem;
       margin-top: 10px;
@@ -104,20 +106,22 @@
       </div>
     </div>
 
+    <div id="temp-reader"></div>
+
     <div class="row" style="margin-top: 10px;">
       <div>
         <label for="manualBarcode">הזן ברקוד ידנית</label>
-        <input type="text" id="manualBarcode" placeholder="למשל: 7290000000000" inputmode="numeric" />
+        <input type="text" id="manualBarcode" placeholder="למשל: 3017620422003" inputmode="numeric" />
       </div>
       <div style="align-self: end;">
         <button type="button" id="lookupBtn" class="success" onclick="onLookupClick()">חפש מוצר</button>
       </div>
     </div>
 
-    <div id="statusMsg" class="status">ממתין להפעלת סקריפט...</div>
+    <div id="statusMsg" class="status">המערכת מוכנה</div>
 
     <div id="manualProductBox" class="hidden" style="margin-top: 12px; background: #fffbeb; padding: 12px; border-radius: 10px; border: 1px solid #fde68a;">
-      <p style="margin: 0 0 8px; font-weight: bold;">הזן פרטי מוצר (יישמר במכשיר):</p>
+      <p style="margin: 0 0 8px; font-weight: bold;">המוצר לא נמצא / לא זוהה ברקוד — הזן פרטים (יישמר במכשיר):</p>
       <div class="row">
         <div>
           <label for="customName">שם המוצר</label>
@@ -215,6 +219,14 @@
       setStatus("נוסף ל" + MEAL_LABELS[meal] + ": " + product.name + " (" + grams + "g = " + calories + ' קק"ל)');
     }
 
+    function openManualFallback(code, message) {
+      pendingBarcode = code || "";
+      document.getElementById("customName").value = "";
+      document.getElementById("customKcal100").value = "";
+      document.getElementById("manualProductBox").classList.remove("hidden");
+      setStatus(message, true);
+    }
+
     function handleBarcode(code) {
       var clean = String(code || "").trim();
       if (!clean) {
@@ -227,7 +239,7 @@
         return;
       }
 
-      setStatus("מחפש מוצר עבור ברקוד " + clean + "...");
+      setStatus("מחפש ברקוד " + clean + " במאגר Open Food Facts ובמאגר האישי...");
       fetch("https://world.openfoodfacts.org/api/v2/product/" + encodeURIComponent(clean) + ".json")
         .then(function (res) {
           if (!res.ok) throw new Error("HTTP " + res.status);
@@ -246,54 +258,88 @@
               return;
             }
           }
-          pendingBarcode = clean;
-          document.getElementById("manualProductBox").classList.remove("hidden");
-          setStatus("ברקוד " + clean + " לא נמצא במאגר. הזן שם וקלוריות ל-100 גרם למטה.", true);
+          openManualFallback(
+            clean,
+            "ברקוד " + clean + " לא קיים במאגר Open Food Facts (נפוץ במוצרים מקומיים/חדשים). מלא שם וקלוריות ל-100 גרם לשמירה במכשיר."
+          );
         })
         .catch(function () {
-          pendingBarcode = clean;
-          document.getElementById("manualProductBox").classList.remove("hidden");
-          setStatus("לא התקבלה תשובה מהמאגר החיצוני עבור " + clean + ". אפשר להזין פרטים ידנית.", true);
+          openManualFallback(
+            clean,
+            "לא הצלחתי לשלוף את ברקוד " + clean + " מהמאגר החיצוני. אפשר להזין ולשמור את המוצר ידנית."
+          );
+        });
+    }
+
+    function decodeWithHtml5Qrcode(file) {
+      return new Promise(function (resolve, reject) {
+        if (typeof Html5Qrcode === "undefined") {
+          reject(new Error("Html5Qrcode not loaded"));
+          return;
+        }
+        var scanner = new Html5Qrcode("temp-reader");
+        scanner.scanFile(file, true)
+          .then(function (decodedText) {
+            try { scanner.clear(); } catch (e) {}
+            resolve(decodedText);
+          })
+          .catch(function (err) {
+            try { scanner.clear(); } catch (e) {}
+            reject(err);
+          });
+      });
+    }
+
+    function decodeWithBarcodeDetector(file) {
+      if (typeof window.BarcodeDetector !== "function" || typeof createImageBitmap !== "function") {
+        return Promise.resolve(null);
+      }
+      var detector = new window.BarcodeDetector({
+        formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39"]
+      });
+      return createImageBitmap(file)
+        .then(function (bitmap) { return detector.detect(bitmap); })
+        .then(function (barcodes) {
+          if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+            return barcodes[0].rawValue;
+          }
+          return null;
+        })
+        .catch(function () { return null; });
+    }
+
+    function onPhotoSelected(inputEl) {
+      var file = inputEl.files && inputEl.files[0];
+      if (!file) return;
+      setStatus("מפענח ברקוד מתוך התמונה...");
+
+      decodeWithHtml5Qrcode(file)
+        .catch(function () { return decodeWithBarcodeDetector(file); })
+        .then(function (code) {
+          if (code) {
+            document.getElementById("manualBarcode").value = code;
+            handleBarcode(code);
+          } else {
+            openManualFallback(
+              "",
+              "לא הצלחתי לזהות ברקוד בתמונה. נסה לצלם מקרוב בתאורה טובה, או הקלד ברקוד / מלא פרטי מוצר ידנית."
+            );
+          }
+        })
+        .catch(function () {
+          openManualFallback(
+            "",
+            "פענוח התמונה נכשל. אפשר להקליד ברקוד למעלה או למלא פרטי מוצר למטה."
+          );
+        })
+        .finally(function () {
+          inputEl.value = "";
         });
     }
 
     function onLookupClick() {
       var code = document.getElementById("manualBarcode").value;
       handleBarcode(code);
-    }
-
-    function onPhotoSelected(inputEl) {
-      var file = inputEl.files && inputEl.files[0];
-      setStatus("נקלטה תמונה (" + (file ? file.name : "ללא קובץ") + ")...");
-      if (!file) return;
-
-      if (typeof window.BarcodeDetector === "function" && typeof createImageBitmap === "function") {
-        var detector = new window.BarcodeDetector({
-          formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39"]
-        });
-        createImageBitmap(file)
-          .then(function (bitmap) { return detector.detect(bitmap); })
-          .then(function (barcodes) {
-            if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
-              document.getElementById("manualBarcode").value = barcodes[0].rawValue;
-              handleBarcode(barcodes[0].rawValue);
-            } else {
-              pendingBarcode = "";
-              document.getElementById("manualProductBox").classList.remove("hidden");
-              setStatus("לא זוהה ברקוד בתמונה. הזן מספר ברקוד למעלה או מלא פרטי מוצר למטה.", true);
-            }
-          })
-          .catch(function () {
-            pendingBarcode = "";
-            document.getElementById("manualProductBox").classList.remove("hidden");
-            setStatus("פענוח התמונה נכשל — אפשר להזין ברקוד או מוצר ידנית.", true);
-          });
-      } else {
-        pendingBarcode = "";
-        document.getElementById("manualProductBox").classList.remove("hidden");
-        setStatus("הדפדפן לא תומך בקריאת ברקוד מתמונה — הזן ברקוד למעלה או מלא פרטי מוצר למטה.", true);
-      }
-      inputEl.value = "";
     }
 
     function onSaveCustomClick() {
@@ -394,7 +440,7 @@
     }
 
     renderMeals();
-    setStatus("הסקריפט פעיל — מוכן לסריקה או חיפוש");
+    setStatus("המערכת מוכנה — צלם תמונה או הזן ברקוד");
   </script>
 </body>
 </html>
